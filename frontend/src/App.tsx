@@ -13,28 +13,18 @@ type Status = { kind: 'idle' | 'connecting' | 'ready' | 'error'; message?: strin
 export default function App() {
   const [host, setHost] = useState('127.0.0.1')
   const [tcpPort, setTcpPort] = useState('5001')
-  const [streamPort, setStreamPort] = useState('8080')
   const [status, setStatus] = useState<Status>({ kind: 'idle' })
   const [typeText, setTypeText] = useState('')
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null)
 
   const wsRef = useRef<WebSocket | null>(null)
-  const streamRef = useRef<WebSocket | null>(null)
   const pendingMove = useRef({ x: 0, y: 0 })
   const rafRef = useRef<number>(0)
-  const lastBlobUrl = useRef<string | null>(null)
 
   const bridgeWsUrl = useCallback(() => {
     const q = new URLSearchParams({ host, port: tcpPort })
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     return `${proto}//${window.location.host}/ws/tcp?${q}`
   }, [host, tcpPort])
-
-  const streamWsUrl = useCallback(() => {
-    const q = new URLSearchParams({ host, port: streamPort })
-    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    return `${proto}//${window.location.host}/ws/stream?${q}`
-  }, [host, streamPort])
 
   const sendTcpJson = useCallback((obj: object) => {
     const w = wsRef.current
@@ -73,22 +63,11 @@ export default function App() {
 
   const disconnect = useCallback(() => {
     try {
-      streamRef.current?.close()
-    } catch {
-      /* ignore */
-    }
-    streamRef.current = null
-    try {
       wsRef.current?.close()
     } catch {
       /* ignore */
     }
     wsRef.current = null
-    if (lastBlobUrl.current) {
-      URL.revokeObjectURL(lastBlobUrl.current)
-      lastBlobUrl.current = null
-    }
-    setPreviewUrl(null)
     setStatus({ kind: 'idle' })
   }, [])
 
@@ -154,73 +133,6 @@ export default function App() {
     setTypeText('')
   }, [typeText, sendTcpJson])
 
-  const startStream = useCallback(async () => {
-    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
-      setStatus({ kind: 'error', message: 'Connect TCP first' })
-      return
-    }
-    const sp = Number(streamPort) || 8080
-    sendTcpJson({
-      websocket: {
-        cmd: 'start',
-        port: sp,
-        fps: 12,
-        maxWidth: 1280,
-        quality: 0.7,
-      },
-    })
-    await new Promise((r) => window.setTimeout(r, 400))
-    try {
-      streamRef.current?.close()
-    } catch {
-      /* ignore */
-    }
-    const sw = new WebSocket(streamWsUrl())
-    streamRef.current = sw
-    sw.binaryType = 'arraybuffer'
-
-    sw.onmessage = (ev) => {
-      if (typeof ev.data === 'string') {
-        try {
-          const o = JSON.parse(ev.data) as { type?: string; message?: string }
-          if (o.type === 'stream_error') {
-            setStatus({ kind: 'error', message: o.message ?? 'Stream error' })
-          }
-        } catch {
-          /* ignore */
-        }
-        return
-      }
-      const buf = ev.data as ArrayBuffer
-      if (lastBlobUrl.current) {
-        URL.revokeObjectURL(lastBlobUrl.current)
-      }
-      const blob = new Blob([buf], { type: 'image/jpeg' })
-      const url = URL.createObjectURL(blob)
-      lastBlobUrl.current = url
-      setPreviewUrl(url)
-    }
-
-    sw.onerror = () => {
-      setStatus({ kind: 'error', message: 'Stream WebSocket failed' })
-    }
-  }, [sendTcpJson, streamPort, streamWsUrl])
-
-  const stopStream = useCallback(() => {
-    sendTcpJson({ websocket: { cmd: 'stop' } })
-    try {
-      streamRef.current?.close()
-    } catch {
-      /* ignore */
-    }
-    streamRef.current = null
-    if (lastBlobUrl.current) {
-      URL.revokeObjectURL(lastBlobUrl.current)
-      lastBlobUrl.current = null
-    }
-    setPreviewUrl(null)
-  }, [sendTcpJson])
-
   useEffect(() => () => disconnect(), [disconnect])
 
   const padActive = status.kind === 'ready'
@@ -255,14 +167,6 @@ export default function App() {
               inputMode="numeric"
             />
           </label>
-          <label>
-            Stream port
-            <input
-              value={streamPort}
-              onChange={(e) => setStreamPort(e.target.value)}
-              inputMode="numeric"
-            />
-          </label>
         </div>
         <div className="row row--btns">
           <button type="button" className="btn primary" onClick={() => void connect()}>
@@ -271,17 +175,6 @@ export default function App() {
           <button type="button" className="btn" onClick={() => disconnect()}>
             Disconnect
           </button>
-          <button
-            type="button"
-            className="btn"
-            onClick={() => void startStream()}
-            disabled={!padActive}
-          >
-            Start preview
-          </button>
-          <button type="button" className="btn" onClick={() => stopStream()} disabled={!padActive}>
-            Stop preview
-          </button>
         </div>
         <p className={`status status--${status.kind}`}>
           {status.kind === 'idle' && 'Not connected'}
@@ -289,17 +182,6 @@ export default function App() {
           {status.kind === 'ready' && (status.message ?? 'Connected')}
           {status.kind === 'error' && (status.message ?? 'Error')}
         </p>
-      </section>
-
-      <section className="panel">
-        <h2>Screen</h2>
-        <div className="preview-wrap">
-          {previewUrl ? (
-            <img src={previewUrl} className="preview-img" alt="Desktop preview" />
-          ) : (
-            <div className="preview-placeholder">Start preview after connecting</div>
-          )}
-        </div>
       </section>
 
       <section className="panel">
